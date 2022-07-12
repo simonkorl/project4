@@ -1,0 +1,13 @@
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   542    0   542    0     0   4355      0 --:--:-- --:--:-- --:--:--  4370
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   617    0    61  100   556    899   8199 --:--:-- --:--:-- --:--:--  9208
+server start,  timestamp: 1657605191933567
+Finish creating dyn scheduler
+new connection,  timestamp: 1657605193887731
+connection closed in timeout_cb
+Finish creating dyn scheduler
+new connection,  timestamp: 1657605314679605
+connection closed in timeout_cb

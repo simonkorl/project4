@@ -1,0 +1,13 @@
+server start,  timestamp: 1657605191936822
+connection closed, you can see result in client.log
+1657605212402012: connection closed
+recv,sent,lost,rtt(ns),cwnd
+9945,22446,297,281617,491307
+total_bytes,total_time(us),throughput(B/s)
+29657246,18514281,1647624
+connection closed, you can see result in client.log
+1657605333080832: connection closed
+recv,sent,lost,rtt(ns),cwnd
+9777,22206,46,332236,505258
+total_bytes,total_time(us),throughput(B/s)
+58976207,18401227,3276455
