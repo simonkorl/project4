@@ -3,7 +3,7 @@ OS := $(shell uname)
 SOURCE_DIR = ../src
 AITRANS_DIR = ../src/aitrans
 AITRANS_LIB_DIR = ../src/aitrans
-BUILD_DIR = $(CURDIR)/build
+BUILD_DIR = $(CURDIR)/builds
 LIB_DIR = $(BUILD_DIR)/release
 INCLUDE_DIR = $(CURDIR)/include
 
