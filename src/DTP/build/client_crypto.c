@@ -681,10 +681,10 @@ void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag){
         
         cfbEN(in,key,out,lenIn);
      //   printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
-    }
+    } 
     else{
         cfbDE(in,key,out,lenIn);
-     //   printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+     
     }
 
     return ;
