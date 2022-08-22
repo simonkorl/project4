@@ -72,6 +72,9 @@
 
 #define MAX_BLOCK_SIZE 1000000  // 1Mbytes
 
+const int aesFlag=1;//1 turn the crypto on and 0 turn off
+AES_KEY  aaeeskey; //openssl key used for crypto
+
 int cfgs_len = 0;
 uint64_t total_bytes = 0;
 uint64_t good_bytes = 0;
@@ -83,6 +86,7 @@ FILE* CLIENT_LOG = NULL;
 FILE* CLIENT_CSV = NULL;
 const char* CLIENT_LOG_FILENAME = "client.log";
 const char *CLIENT_CSV_FILENAME = "client.csv";
+
 #define WRITE_TO_LOG(...)                                           \
   {                                                                 \
     if(!CLIENT_LOG) {                                               \
@@ -115,15 +119,22 @@ struct conn_io {
 //     fprintf(stderr, "%s\n", line);
 // }
 char * getSend(const char * srcip,const char * dstip,const char * proxyaddr);
-int32_t aes_encrypt(uint8_t* in,  char* key, uint8_t* out); // 加密
-int32_t aes_decrypt(uint8_t* in, char* key, uint8_t* out); // 解密
+int32_t aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len); // 加密
+int32_t aes_decrypt(uint8_t* in, char* key, uint8_t* out,int len); // 解密
+int32_t 
+cfbDE(uint8_t* in,  char* key, uint8_t* out,int len);
+int32_t 
+cfbEN(uint8_t* in,  char* key, uint8_t* out,int len);
+void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag);
+void aes_init(AES_KEY * aesKey,char * srcKey);
 
 static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
     static uint8_t out[MAX_DATAGRAM_SIZE];
+    static uint8_t encryptedData[MAX_DATAGRAM_SIZE+16];
     uint64_t rate = quiche_bbr_get_pacing_rate(conn_io->conn);  // bits/s
     // uint64_t rate = 48*1024*1024; //48Mbits/s
     if (conn_io->done_writing) {
-        conn_io->can_send = 1350;
+        conn_io->can_send = MAX_DATAGRAM_SIZE+16;
         conn_io->t_last = getCurrentUsec();
         conn_io->done_writing = false;
     }
@@ -135,7 +146,7 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
         // fprintf(stderr, "%ld us time went, %ld bytes can send\n",
         //         t_now - conn_io->t_last, conn_io->can_send);
         conn_io->t_last = t_now;
-        if (conn_io->can_send < 1350) {
+        if (conn_io->can_send < MAX_DATAGRAM_SIZE+16) {
             // fprintf(stderr, "can_send < 1350\n");
             conn_io->pace_timer.repeat = 0.001;
             ev_timer_again(loop, &conn_io->pace_timer);
@@ -156,11 +167,21 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
             // fprintf(stderr, "failed to create packet: %zd\n", written);
             return;
         }
+        //sent out with new encryption
+        ssize_t sent;
+        if(aesFlag==1){
+            preCFB(out,written,encryptedData,MAX_DATAGRAM_SIZE+16,1);
+          
+            sent= send(conn_io->sock, encryptedData, written, 0);
+        }
+       
+        else
+            sent= send(conn_io->sock, out, written, 0);
+ 
 
-        ssize_t sent = send(conn_io->sock, out, written, 0);
         if (sent != written) {
             perror("failed to send");
-            return;
+          //  return;
         }
 
         // fprintf(stderr, "sent %zd bytes\n", sent);
@@ -181,13 +202,34 @@ static void flush_egress_pace(EV_P_ ev_timer *pace_timer, int revents) {
 static void recv_cb(EV_P_ ev_io *w, int revents) {
     struct conn_io *conn_io = w->data;
     static uint8_t buf[MAX_BLOCK_SIZE];
-    static uint8_t encryptedbuf[MAX_BLOCK_SIZE];
+    static uint8_t encryptedbuf[MAX_BLOCK_SIZE+16];
     uint8_t i = 3;
 
     while (i--) {
-        ssize_t read = recv(conn_io->sock, encryptedbuf, sizeof(buf), 0);
+        ssize_t read;
+        
+        if(aesFlag==1){
+            read = recv(conn_io->sock, encryptedbuf, sizeof(encryptedbuf), 0);
+            preCFB(encryptedbuf,read,buf,MAX_BLOCK_SIZE,0 );
+            /*
+            printf("\nthe encoded data is:\n");
+        for(int i=0;i<read;i++){
+            printf("%d ",encryptedbuf[i]);
+        }
+        printf("\n");
+        */
 
-         aes_decrypt(encryptedbuf, key,buf );
+        }
+        else
+            read = recv(conn_io->sock, buf, sizeof(buf), 0);
+      //  printf("\nthe read is :%ld\n",read);
+      /*
+        for(int i=0;i<read;i++){
+            printf("%d ",buf[i]);
+        }
+        printf("\n");
+        
+        */
         if (read < 0) {
             if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
                 // fprintf(stderr, "recv would block\n");
@@ -338,7 +380,7 @@ int main(int argc, char *argv[]) {
     const char *dstip = argv[5];
 
     char * buf=getSend(srcip,dstip,proxyaddr);
-    printf("%s\n",buf);
+    
     key=strstr(buf,"result");
    if (key ==NULL){
        printf("Failed to fetch keys.");
@@ -350,11 +392,12 @@ int main(int argc, char *argv[]) {
     key[contLen-2]='\0';
     key+=9;
     
+    printf("The key is :%s\n",key);
+    aes_init(&aaeeskey,key);
 
     const char *host = argv[1];
     const char *port = argv[2];
-    // const double priority_weight = atof(argv[4]);
-    // const uint64_t min_priority = atoi(argv[5]);
+   
     CLIENT_LOG = fopen(CLIENT_LOG_FILENAME, "w");
     CLIENT_CSV = fopen(CLIENT_CSV_FILENAME, "w");
 
@@ -463,7 +506,7 @@ int main(int argc, char *argv[]) {
     conn_io->sock = sock;
     conn_io->conn = conn;
     conn_io->t_last = getCurrentUsec();
-    conn_io->can_send = 1350;
+    conn_io->can_send = 1350+16;
     conn_io->done_writing = false;
 
     ev_io watcher;
@@ -493,7 +536,7 @@ int main(int argc, char *argv[]) {
     quiche_config_free(config);
 
     close(sock);
-free(buf);
+    free(buf);
     return 0;
 }
 
@@ -530,7 +573,7 @@ char * getSend(const  char * srcip,const char * dstip,const char * proxyaddr){
  char request[BUFLEN];
 
   snprintf(request, BUFLEN, post_template, srcip,dstip,cont,proxyaddr);
-  printf("%s",request);
+  //printf("%s",request);
   // printf("%s",request);
    // free(buf);
    // clearerr(stream);
@@ -546,14 +589,13 @@ char * getSend(const  char * srcip,const char * dstip,const char * proxyaddr){
    }  //将刚刚FILE* stream的数据流读取到buf中
 
    
-
     pclose(stream); 
    return buf;
 }
-
 int32_t 
-aes_encrypt(uint8_t* in, char* key, uint8_t* out)
+aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len)
 {
+    
     assert(in && key && out);
     unsigned char iv[AES_BLOCK_SIZE]; // 加密的初始化向量
     for(int i=0; i<AES_BLOCK_SIZE; ++i){
@@ -565,7 +607,7 @@ aes_encrypt(uint8_t* in, char* key, uint8_t* out)
         return -1;
     }
  
-    int len = strlen((char*)in);
+    //lyx int len = strlen((char*)in);
     
     len += 16;
     len -= len%16; // 长度 必须是 16 （128位）的整数倍 => 17 + 16 = 33   33-1 = 32;
@@ -576,8 +618,9 @@ aes_encrypt(uint8_t* in, char* key, uint8_t* out)
  
  
 int32_t 
-aes_decrypt(uint8_t* in,  char* key, uint8_t* out)
-{
+aes_decrypt(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
     if(!in || !key || !out) return -1;
     unsigned char iv[AES_BLOCK_SIZE] = {0};
     
@@ -586,9 +629,67 @@ aes_decrypt(uint8_t* in,  char* key, uint8_t* out)
         return -2;
     }
     
-    int len = strlen((char*)in);
+   //lyx  int len = strlen((char*)in);
     len += 16;
     len -= len%16;
     AES_cbc_encrypt((unsigned const char*)in, (unsigned char*)out, len, &aes, iv, AES_DECRYPT);
     return 0;
+}
+
+ 
+int32_t 
+cfbDE(uint8_t* in,  char* key, uint8_t* out,int len)
+{
+    
+  
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+    
+    
+   // int num=16;
+   len +=16;
+   len-=len%16;
+   int num=0;
+
+    AES_cfb128_encrypt(in,out,len,&aaeeskey, iv, &num,0);
+    return 0;
+}
+ 
+ 
+int32_t 
+cfbEN(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
+   
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+   
+    int num=0;
+       len +=16;
+   len-=len%16;
+    AES_cfb128_encrypt(in,out,len, &aaeeskey, iv, &num,1);
+ 
+    return 0;
+}
+//flag=1,encrypt in into out
+//flag=0 decrypt in into out
+void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag){
+    
+   // memset( out, '\0',lenOut );
+   
+  //  printf("调用函数 :%s\n",func);
+     
+    if(flag ==1){
+        
+        cfbEN(in,key,out,lenIn);
+     //   printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
+    }
+    else{
+        cfbDE(in,key,out,lenIn);
+     //   printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+    }
+
+    return ;
+}
+ 
+void aes_init(AES_KEY * aesKey,char * srcKey){
+    AES_set_encrypt_key((uint8_t*)srcKey, 128, aesKey);
 }
