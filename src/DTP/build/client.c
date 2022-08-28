@@ -199,7 +199,7 @@ void aes_init(AES_KEY * aesKey,char * srcKey){
 
 static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
     static uint8_t out[MAX_DATAGRAM_SIZE];
-    static uint8_t encryptedData[MAX_DATAGRAM_SIZE+16];
+   // static uint8_t encryptedData[MAX_DATAGRAM_SIZE+16];
     uint64_t rate = quiche_bbr_get_pacing_rate(conn_io->conn);  // bits/s
     // uint64_t rate = 48*1024*1024; //48Mbits/s
     if (conn_io->done_writing) {
@@ -237,16 +237,8 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
             return;
         }
         ssize_t sent;
-        if(aesFlag==1){
-            preCFB(out,written,encryptedData,MAX_DATAGRAM_SIZE+16,1);
-           // preProcessBuf(out,written,encryptedData,MAX_DATAGRAM_SIZE+16,1,"flush_egress");
-            sent= send(conn_io->sock, encryptedData, written, 0);
-        }
-        //aes_encrypt(out,key,encryptedData);
-        else
-            sent= send(conn_io->sock, out, written, 0);
-     //   printf("\nthe sent is :%ld\n",sent);
-      //  written=strlen((char *)encryptedData);
+        sent= send(conn_io->sock, out, written, 0);
+  
 
         if (sent != written) {
             perror("failed to send");
@@ -277,22 +269,8 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
     while (i--) {
         ssize_t read;
         
-        if(aesFlag==1){
-            read = recv(conn_io->sock, encryptedbuf, sizeof(encryptedbuf), 0);
-            if(quiche_conn_is_established(conn_io->conn)){
-                printf("第%d次接收:\n",recvCount);
-                recvCount++;
-                for(int i=0;i<read;i++){
-                printf("%c",encryptedbuf[i]);
-                }
-             printf("\n");
-            }
-            
-            preCFB(encryptedbuf,read,buf,MAX_BLOCK_SIZE,0);
-         
-        }
-        else
-            read = recv(conn_io->sock, buf, sizeof(buf), 0);
+
+        read = recv(conn_io->sock, buf, sizeof(buf), 0);
        
         
         if (read < 0) {
@@ -306,7 +284,7 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         }
         total_bytes += read;
         ssize_t done = quiche_conn_recv(conn_io->conn, buf, read);
-        //printf("yeah\n\n\n%s\n\n\n",buf);
+      
         if (done == QUICHE_ERR_DONE) {
              
             break;
@@ -378,28 +356,41 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
 
               ssize_t recv_len =
              quiche_conn_stream_recv(conn_io->conn, s, buf, sizeof(buf), &fin);
-            // preCFB(buf,(int)strlen((char*)buf),encryptedbuf,MAX_BLOCK_SIZE,1);
+              int banklen=(int)block_size;
+             printf("解密前交易信息\n");
+              buf[banklen++]='\0';
+             printf("%s\n",buf);
+  
+             memcpy(encryptedbuf,buf,banklen);
+             encryptedbuf[banklen]=0;
+              
+             if(aesFlag==1){
+                 preCFB(buf,banklen,encryptedbuf,MAX_BLOCK_SIZE,0);
+                  
+             }
              
               printf("解密后交易信息:\n");
-              printf("%s\n",buf);
-                if (recv_len < 0) {
-                 break;
-            }
+              printf("\n%s\n",encryptedbuf);
             char HardBuf[1000];
             FILE *fp =fopen(dtp_cfg_fname,"r");
-             int i=0;
+            int i=0;
             for(i=0;i<MAX_BLOCK_SIZE&&!feof(fp);i++){
-             HardBuf[i]=fgetc(fp);
-             printf("%c",HardBuf[i]);
+            HardBuf[i]=fgetc(fp);
+          //   printf("%c",HardBuf[i]);
            }
-     
-           buf[i-1]='\0';
+   
+           HardBuf[i-1]='\0';
            i--;
-           if(strcmp((char *)buf,(char*)HardBuf)==1){
-               printf("\nsrc str is equivalent with dst str.\n");
+           printf("源文件信息:\n");
+           printf("%s",HardBuf);
+           if(strcmp((char *)encryptedbuf,(char*)HardBuf)==0){
+               printf("\n源信息与接收到信息相同\n");
            }
             
-            
+                      if (recv_len < 0) {
+                     
+                 break;
+            }
      
       
          //   printf("recv: %.*s", (int)recv_len, buf);
@@ -490,11 +481,11 @@ int main(int argc, char *argv[]) {
     key[contLen-2]='\0';
     key+=9;
     
-    if(key==NULL){
-        printf("\n错误:获取密钥失败\n" );
+    if(!strcmp("null",key)){
+        printf("\n错误:获取密钥失败\n");
         aesFlag=0;
     }else{
-        printf("\nThe key is :%s\n",key);
+        printf("\nthe key is :%s\n", key);
         aes_init(&aaeeskey,key);
     }
     
