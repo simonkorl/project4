@@ -61,6 +61,10 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <openssl/aes.h>
+
+#define AES_BITS 32*8
+#define MSG_LEN 1280
 
 #define LOCAL_CONN_ID_LEN 16
 
@@ -68,17 +72,22 @@
 
 #define MAX_BLOCK_SIZE 1000000  // 1Mbytes
 
+int recvCount=0;
+int aesFlag=1;
+AES_KEY  aaeeskey; //openssl key
 int cfgs_len = 0;
 uint64_t total_bytes = 0;
 uint64_t good_bytes = 0;
 uint64_t complete_bytes = 0;
 uint64_t start_timestamp = 0;
 uint64_t end_timestamp = 0;
-
+char * key =NULL;
 FILE* CLIENT_LOG = NULL;
 FILE* CLIENT_CSV = NULL;
 const char* CLIENT_LOG_FILENAME = "client.log";
 const char *CLIENT_CSV_FILENAME = "client.csv";
+const char * dtp_cfg_fname="exchangeImf.json";
+
 #define WRITE_TO_LOG(...)                                           \
   {                                                                 \
     if(!CLIENT_LOG) {                                               \
@@ -111,12 +120,90 @@ struct conn_io {
 //     fprintf(stderr, "%s\n", line);
 // }
 char * getSend(const char * srcip,const char * dstip,const char * proxyaddr);
+int32_t aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len); // 加密
+int32_t aes_decrypt(uint8_t* in, char* key, uint8_t* out,int len); // 解密
+void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]);
+/*
+myshit!
+*/
+ 
+
+int32_t 
+cfbDE(uint8_t* in,  char* key, uint8_t* out,int len)
+{
+    
+  
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+    
+    
+   // int num=16;
+   len +=16;
+   len-=len%16;
+   int num=0;
+
+    AES_cfb128_encrypt(in,out,len,&aaeeskey, iv, &num,0);
+    return 0;
+}
+ 
+ 
+int32_t 
+cfbEN(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
+   
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+   
+    int num=0;
+       len +=16;
+   len-=len%16;
+    AES_cfb128_encrypt(in,out,len, &aaeeskey, iv, &num,1);
+ 
+    return 0;
+}
+
+void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag){
+    
+    memset( out, '\0',lenOut );
+   
+ //   printf("调用函数 :%s\n",func);
+     
+    if(flag ==1){
+        
+        cfbEN(in,key,out,lenIn);
+      //  printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
+    }
+    else{
+        cfbDE(in,key,out,lenIn);
+       // printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+    }
+
+    return ;
+}
+ 
+
+
+ void pri(char * str,int len,char bro[]){
+     printf("%s\n",bro);
+     
+     for(int i=0;i<len;i++)
+        printf("%d ",str[i]);
+
+    printf("\n");
+ }
+void aes_init(AES_KEY * aesKey,char * srcKey){
+    AES_set_encrypt_key((uint8_t*)srcKey, 128, aesKey);
+}
+
+
+
+
 static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
     static uint8_t out[MAX_DATAGRAM_SIZE];
+    static uint8_t encryptedData[MAX_DATAGRAM_SIZE+16];
     uint64_t rate = quiche_bbr_get_pacing_rate(conn_io->conn);  // bits/s
     // uint64_t rate = 48*1024*1024; //48Mbits/s
     if (conn_io->done_writing) {
-        conn_io->can_send = 1350;
+        conn_io->can_send = MAX_DATAGRAM_SIZE+16;
         conn_io->t_last = getCurrentUsec();
         conn_io->done_writing = false;
     }
@@ -128,7 +215,7 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
         // fprintf(stderr, "%ld us time went, %ld bytes can send\n",
         //         t_now - conn_io->t_last, conn_io->can_send);
         conn_io->t_last = t_now;
-        if (conn_io->can_send < 1350) {
+        if (conn_io->can_send < MAX_DATAGRAM_SIZE+16) {
             // fprintf(stderr, "can_send < 1350\n");
             conn_io->pace_timer.repeat = 0.001;
             ev_timer_again(loop, &conn_io->pace_timer);
@@ -149,11 +236,21 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
             // fprintf(stderr, "failed to create packet: %zd\n", written);
             return;
         }
+        ssize_t sent;
+        if(aesFlag==1){
+            preCFB(out,written,encryptedData,MAX_DATAGRAM_SIZE+16,1);
+           // preProcessBuf(out,written,encryptedData,MAX_DATAGRAM_SIZE+16,1,"flush_egress");
+            sent= send(conn_io->sock, encryptedData, written, 0);
+        }
+        //aes_encrypt(out,key,encryptedData);
+        else
+            sent= send(conn_io->sock, out, written, 0);
+     //   printf("\nthe sent is :%ld\n",sent);
+      //  written=strlen((char *)encryptedData);
 
-        ssize_t sent = send(conn_io->sock, out, written, 0);
         if (sent != written) {
             perror("failed to send");
-            return;
+          //  return;
         }
 
         // fprintf(stderr, "sent %zd bytes\n", sent);
@@ -174,11 +271,30 @@ static void flush_egress_pace(EV_P_ ev_timer *pace_timer, int revents) {
 static void recv_cb(EV_P_ ev_io *w, int revents) {
     struct conn_io *conn_io = w->data;
     static uint8_t buf[MAX_BLOCK_SIZE];
+    static uint8_t encryptedbuf[MAX_BLOCK_SIZE+16];
     uint8_t i = 3;
 
     while (i--) {
-        ssize_t read = recv(conn_io->sock, buf, sizeof(buf), 0);
-
+        ssize_t read;
+        
+        if(aesFlag==1){
+            read = recv(conn_io->sock, encryptedbuf, sizeof(encryptedbuf), 0);
+            if(quiche_conn_is_established(conn_io->conn)){
+                printf("第%d次接收:\n",recvCount);
+                recvCount++;
+                for(int i=0;i<read;i++){
+                printf("%c",encryptedbuf[i]);
+                }
+             printf("\n");
+            }
+            
+            preCFB(encryptedbuf,read,buf,MAX_BLOCK_SIZE,0);
+         
+        }
+        else
+            read = recv(conn_io->sock, buf, sizeof(buf), 0);
+       
+        
         if (read < 0) {
             if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
                 // fprintf(stderr, "recv would block\n");
@@ -190,9 +306,9 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         }
         total_bytes += read;
         ssize_t done = quiche_conn_recv(conn_io->conn, buf, read);
-
+        //printf("yeah\n\n\n%s\n\n\n",buf);
         if (done == QUICHE_ERR_DONE) {
-            // fprintf(stderr, "done reading\n");
+             
             break;
         }
 
@@ -220,29 +336,35 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         ev_break(EV_A_ EVBREAK_ONE);
         return;
     }
-
+   
     if (quiche_conn_is_established(conn_io->conn)) {
+       
         uint64_t s = 0;
 
         quiche_stream_iter *readable = quiche_conn_readable(conn_io->conn);
-
+       
         while (quiche_stream_iter_next(readable, &s)) {
-            // fprintf(stderr, "stream %" PRIu64 " is readable\n", s);
-
+            
+                
             bool fin = false;
             ssize_t recv_len = quiche_conn_stream_recv(conn_io->conn, s, buf,
                                                        sizeof(buf), &fin);
-            /* total_bytes += recv_len; */
+           
             if (recv_len < 0) {
+                 
                 break;
             }
+            
             if (fin) {
+                
               if (s == 1) {
+                   
                 // cfgs length
                 cfgs_len = *((int*) buf);
                 fprintf(stderr, "get cfgs number: %d\n", cfgs_len);
                 cfgs_len--;
               } else {
+                 
                 // output block_size,block_priority,block_deadline
                 uint64_t block_size, block_priority, block_deadline;
                 int64_t bct = quiche_conn_get_bct(conn_io->conn, s);
@@ -252,11 +374,37 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                                            &block_priority, &block_deadline);
                 good_bytes += goodbytes;
                 complete_bytes += block_size;
-                // FILE* clientlog = fopen("client.log", "a+");
-                // fprintf(clientlog, "%2ld %14ld %4ld %9ld %5ld %9ld\n", s,
-                //         goodbytes, bct, block_size, block_priority,
-                //         block_deadline);
-                // fclose(clientlog);
+              //recv
+
+              ssize_t recv_len =
+             quiche_conn_stream_recv(conn_io->conn, s, buf, sizeof(buf), &fin);
+            // preCFB(buf,(int)strlen((char*)buf),encryptedbuf,MAX_BLOCK_SIZE,1);
+             
+              printf("解密后交易信息:\n");
+              printf("%s\n",buf);
+                if (recv_len < 0) {
+                 break;
+            }
+            char HardBuf[1000];
+            FILE *fp =fopen(dtp_cfg_fname,"r");
+             int i=0;
+            for(i=0;i<MAX_BLOCK_SIZE&&!feof(fp);i++){
+             HardBuf[i]=fgetc(fp);
+             printf("%c",HardBuf[i]);
+           }
+     
+           buf[i-1]='\0';
+           i--;
+           if(strcmp((char *)buf,(char*)HardBuf)==1){
+               printf("\nsrc str is equivalent with dst str.\n");
+           }
+            
+            
+     
+      
+         //   printf("recv: %.*s", (int)recv_len, buf);
+                
+
                 WRITE_TO_LOG("%2ld %10ld %10ld %10ld %10ld\n",
                     s, bct, block_size, block_priority, block_deadline);
 
@@ -266,6 +414,7 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                   end_timestamp = getCurrentUsec();
                   fprintf(stderr, "end_timestamp: %lu\n", end_timestamp);
                 }
+
               }
             }
 
@@ -277,8 +426,8 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         }
 
         quiche_stream_iter_free(readable);
+    
     }
-
     flush_egress(loop, conn_io);
 }
 
@@ -321,7 +470,7 @@ static void timeout_cb(EV_P_ ev_timer *w, int revents) {
         return;
     }
 }
-
+ 
 int main(int argc, char *argv[]) {
 
     const char * proxyaddr=argv[3];
@@ -330,8 +479,25 @@ int main(int argc, char *argv[]) {
 
     char * buf=getSend(srcip,dstip,proxyaddr);
     printf("%s\n",buf);
-     
-    free(buf);
+    key=strstr(buf,"result");
+   if (key ==NULL){
+       printf("Failed to fetch keys.");
+       return 0;
+   }
+   unsigned int contLen= strlen (key);
+ 
+    key[contLen-1]='\0';
+    key[contLen-2]='\0';
+    key+=9;
+    
+    if(key==NULL){
+        printf("\n错误:获取密钥失败\n" );
+        aesFlag=0;
+    }else{
+        printf("\nThe key is :%s\n",key);
+        aes_init(&aaeeskey,key);
+    }
+    
 
     const char *host = argv[1];
     const char *port = argv[2];
@@ -445,7 +611,7 @@ int main(int argc, char *argv[]) {
     conn_io->sock = sock;
     conn_io->conn = conn;
     conn_io->t_last = getCurrentUsec();
-    conn_io->can_send = 1350;
+    conn_io->can_send = 1350+16;
     conn_io->done_writing = false;
 
     ev_io watcher;
@@ -475,7 +641,7 @@ int main(int argc, char *argv[]) {
     quiche_config_free(config);
 
     close(sock);
-
+    free(buf);
     return 0;
 }
 
@@ -531,4 +697,65 @@ char * getSend(const  char * srcip,const char * dstip,const char * proxyaddr){
 
     pclose(stream); 
    return buf;
+}
+int32_t 
+aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len)
+{
+    
+    assert(in && key && out);
+    unsigned char iv[AES_BLOCK_SIZE]; // 加密的初始化向量
+    for(int i=0; i<AES_BLOCK_SIZE; ++i){
+        iv[i] = 0; 
+    }
+ 
+    AES_KEY aes;
+    if(AES_set_encrypt_key((const unsigned char*)key, 128, &aes) < 0){
+        return -1;
+    }
+ 
+    //lyx int len = strlen((char*)in);
+    
+    len += 16;
+    len -= len%16; // 长度 必须是 16 （128位）的整数倍 => 17 + 16 = 33   33-1 = 32;
+ 
+    AES_cbc_encrypt((const unsigned char*)in, (unsigned char*)out, len, &aes, iv, AES_ENCRYPT);
+    return 0;
+}
+ 
+ 
+int32_t 
+aes_decrypt(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
+    if(!in || !key || !out) return -1;
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+    
+    AES_KEY aes;
+    if(AES_set_decrypt_key((unsigned const char*)key, 128, &aes) < 0){
+        return -2;
+    }
+    
+   //lyx  int len = strlen((char*)in);
+    len += 16;
+    len -= len%16;
+    AES_cbc_encrypt((unsigned const char*)in, (unsigned char*)out, len, &aes, iv, AES_DECRYPT);
+    return 0;
+}
+//flag=1,encrypt in into out
+//flag=0 decrypt in into out
+void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]){
+    
+    memset( out, '\0',lenOut );
+    printf("调用函数 :%s\n",func);
+    if(flag ==1){
+        
+        aes_encrypt(in,key,out,lenIn);
+      //  printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
+    }
+    else{
+        aes_decrypt(in,key,out,lenIn);
+    //    printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+    }
+
+    return ;
 }
