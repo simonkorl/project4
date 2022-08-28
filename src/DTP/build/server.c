@@ -51,6 +51,10 @@
 
 #include <dtp_config.h>
 #include <quiche.h>
+#include <openssl/aes.h>
+
+#define AES_BITS 32*8
+#define MSG_LEN 1280
 
 #define LOCAL_CONN_ID_LEN 16
 
@@ -58,11 +62,15 @@
 
 #define MAX_BLOCK_SIZE 1000000  // 1Mbytes
 
+int aesFlag=1;
+AES_KEY  aaeeskey; 
+char * key =NULL;
 char *dtp_cfg_fname;
 int cfgs_len;
 struct dtp_config *cfgs = NULL;
 bool has_send_len = false;
-
+uint8_t * keyBuf=NULL;
+int encFlag=0;
 uint64_t start_timestamp = 0;
 uint64_t end_timestamp = 0;
 
@@ -132,15 +140,83 @@ static void timeout_cb(EV_P_ ev_timer *w, int revents);
 //project 4,register and get the key
 //{"code":200,"msg":"成功","result":"####"}
 
+
 char * getSend(const char *,const char *,const char *);
+int32_t aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len); // 加密
+int32_t aes_decrypt(uint8_t* in,  char* key, uint8_t* out,int len); // 解密
+
+ 
+int32_t 
+cfbDE(uint8_t* in,  char* key, uint8_t* out,int len)
+{
+    
+  
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+    
+    
+   // int num=16;
+   len +=16;
+   len-=len%16;
+   int num=0;
+
+    AES_cfb128_encrypt(in,out,len,&aaeeskey, iv, &num,0);
+    return 0;
+}
+ 
+ 
+int32_t 
+cfbEN(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
+   
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+   
+    int num=0;
+       len +=16;
+   len-=len%16;
+    AES_cfb128_encrypt(in,out,len, &aaeeskey, iv, &num,1);
+ 
+    return 0;
+}
+ void pri(char * str,int len,char bro[]){
+     printf("%s\n",bro);
+     
+     for(int i=0;i<len;i++)
+        printf("%d ",str[i]);
+
+    printf("\n");
+ }
+void aes_init(AES_KEY * aesKey,char * srcKey){
+    AES_set_encrypt_key((uint8_t*)srcKey, 128, aesKey);
+}
+void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]){
+    
+    memset( out, '\0',lenOut );
+   
+  //  printf("调用函数  1 :%s\n",func);
+     
+    if(flag ==1){
+        
+        cfbEN(in,key,out,lenIn);
+       // printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
+    }
+    else{
+        cfbDE(in,key,out,lenIn);
+       // printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+    }
+
+    return ;
+}
+void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]);
 
 static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
     // fprintf(stderr, "enter flush\n");
     static uint8_t out[MAX_DATAGRAM_SIZE];
+    static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
     uint64_t rate = quiche_bbr_get_pacing_rate(conn_io->conn);  // bits/s
     /* WRITE_TO_FILE("%lu pacing: %lu\n", getCurrentUsec(), rate); */
     if (conn_io->done_writing) {
-        conn_io->can_send = 1350;
+        conn_io->can_send = MAX_DATAGRAM_SIZE+16;
         conn_io->t_last = getCurrentUsec();
         conn_io->done_writing = false;
     }
@@ -152,7 +228,7 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
         // fprintf(stderr, "%ld us time went, %ld bytes can send\n",
         //         t_now - conn_io->t_last, conn_io->can_send);
         conn_io->t_last = t_now;
-        if (conn_io->can_send < 1350) {
+        if (conn_io->can_send < MAX_DATAGRAM_SIZE+16) {
             // fprintf(stderr, "can_send < 1350\n");
             conn_io->pace_timer.repeat = 0.001;
             ev_timer_again(loop, &conn_io->pace_timer);
@@ -172,13 +248,35 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
             // fprintf(stderr, "failed to create packet: %zd\n", written);
             return;
         }
-
-        ssize_t sent = sendto(conn_io->sock, out, written, 0,
+        size_t  sent;
+        if(aesFlag==1){
+            preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"flush_egress");
+            sent = sendto(conn_io->sock, cypher, written, 0,
                               (struct sockaddr *)&conn_io->peer_addr,
                               conn_io->peer_addr_len);
-        if (sent != written) {
-            // perror("failed to send");
-            return;
+
+        }
+        else
+            sent = sendto(conn_io->sock, out, written, 0,
+                              (struct sockaddr *)&conn_io->peer_addr,conn_io->peer_addr_len);
+        
+        if(encFlag ==1&&aesFlag==1){
+            printf("加密后交易信息:\n");
+            printf("%s\n\n",cypher);
+            encFlag=2;
+        }
+        else if(encFlag==1 &&aesFlag==0){
+            printf("加密后交易信息:\n");
+            printf("%s\n\n",keyBuf);
+            encFlag=2;
+        }
+       // WRITE_TO_FILE("\nthe sent is :%ld\n",sent);
+        //aes_encrypt(out, key, cypher);
+      
+              // written=strlen((char*)cypher);               
+        if (sent != written  ) {
+            perror("failed to send\n");
+          //  return;
         }
 
         send_bytes += sent;
@@ -253,14 +351,39 @@ static void sender_cb(EV_P_ ev_timer *w, int revents) {
         float send_time_gap = 0.0;
         static uint8_t buf[MAX_BLOCK_SIZE];
 
-        if (!has_send_len) {
-          *((int*)buf) = cfgs_len;
-          if (quiche_conn_stream_send_full(conn_io->conn, 1, buf, 4, true, 100000, 0, 0) < 0) {
-            WRITE_TO_FILE("failed to send cfgs number\n");
-          } else {
-            has_send_len = true;
-          }
-        }
+        FILE *fp =fopen(dtp_cfg_fname,"r");
+ 
+      if(fp == NULL) 
+      {
+          perror("打开文件时发生错误");
+         return ;
+     }
+     printf("加密前交易信息\n");
+     int i=0;
+     for(i=0;i<MAX_BLOCK_SIZE&&!feof(fp);i++){
+         buf[i]=fgetc(fp);
+         printf("%c",buf[i]);
+     }
+     
+     buf[i-1]='\0';
+     i--;
+     encFlag=1;
+    keyBuf=buf;
+    static uint8_t sndb[100];
+
+    conn_io->configs[0].block_size=i;
+    conn_io->configs[0].deadline=10000;
+    conn_io->configs[0].priority=1;
+    conn_io->configs[0].send_time_gap=0.000001;
+
+    if (!has_send_len) {
+     *((int*)sndb) = cfgs_len;
+      if (quiche_conn_stream_send_full(conn_io->conn, 1, sndb, 4, true, 100000, 0, 0) < 0) {
+           WRITE_TO_FILE("failed to send cfgs number\n");
+         } else {
+          has_send_len = true;
+         }
+      }
 
         for (int i = conn_io->send_round; i < conn_io->configs_len; i++) {
             send_time_gap = conn_io->configs[i].send_time_gap;  // sec
@@ -268,20 +391,16 @@ static void sender_cb(EV_P_ ev_timer *w, int revents) {
             priority = conn_io->configs[i].priority;
             block_size = conn_io->configs[i].block_size;
             stream_id = 4 * (conn_io->send_round + 1) + 1;
-            // if ((stream_id + 1) % 8 == 0)
-            //     depend_id = stream_id - 4;
-            // else
-            // depend_id = stream_id;
+      
             depend_id = stream_id;
             if (block_size > MAX_BLOCK_SIZE) block_size = MAX_BLOCK_SIZE;
 
             if (quiche_conn_stream_send_full(conn_io->conn, stream_id, buf,
                                              block_size, true, deadline,
                                              priority, depend_id) < 0) {
-                // fprintf(stderr, "failed to send data round %d\n",
-                // conn_io->send_round);
+                
             } else {
-                // fprintf(stderr, "send round %d\n", conn_io->send_round);
+                 
             }
 
             conn_io->send_round++;
@@ -320,7 +439,8 @@ static struct conn_io *create_conn(struct ev_loop *loop, uint8_t *odcid,
         return NULL;
     }
 
-    ssize_t rand_len = read(rng, conn_io->cid, LOCAL_CONN_ID_LEN);
+    ssize_t rand_len = read(rng, conn_io->cid, LOCAL_CONN_ID_LEN); //lyx ?? note the fd is a file 
+   
     if (rand_len < 0) {
         perror("failed to create connection ID");
         return NULL;
@@ -339,17 +459,15 @@ static struct conn_io *create_conn(struct ev_loop *loop, uint8_t *odcid,
     conn_io->send_round = -1;
 
     cfgs = parse_dtp_config(dtp_cfg_fname, &cfgs_len);
-    if (cfgs_len <= 0) {
-        fprintf(stderr, "No valid configuration\n");
-    } else {
+   cfgs_len=1;
         conn_io->configs_len = cfgs_len;
-        conn_io->configs = cfgs;
-    }
-    conn_io->configs_len = cfgs_len;
-    conn_io->configs = cfgs;
+        conn_io->configs = malloc(sizeof(*cfgs) * cfgs_len);;
+    
+   
+  
 
     conn_io->t_last = getCurrentUsec();
-    conn_io->can_send = 1350;
+    conn_io->can_send = MAX_DATAGRAM_SIZE+16;
     conn_io->done_writing = false;
 
     // quiche_conn_set_tail(conn, 5000);
@@ -386,7 +504,11 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
     struct conn_io *tmp, *conn_io = NULL;
 
     static uint8_t buf[MAX_BLOCK_SIZE];
+    static uint8_t encode_data[MAX_BLOCK_SIZE];
+
     static uint8_t out[MAX_DATAGRAM_SIZE];
+    static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
+    
 
     uint8_t i = 3;
 
@@ -397,8 +519,18 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         socklen_t peer_addr_len = sizeof(peer_addr);
         memset(&peer_addr, 0, peer_addr_len);
 
-        ssize_t read = recvfrom(conns->sock, buf, sizeof(buf), 0,
+        ssize_t read;
+        if(aesFlag==1){
+            read = recvfrom(conns->sock, encode_data, sizeof(buf), 0,
                                 (struct sockaddr *)&peer_addr, &peer_addr_len);
+            preCFB(encode_data,read,buf,MAX_BLOCK_SIZE,0,"recv_cb开头435行");
+        }
+        else
+            read = recvfrom(conns->sock, buf, sizeof(buf), 0,
+                                (struct sockaddr *)&peer_addr, &peer_addr_len);
+            
+   // WRITE_TO_FILE("\nthe read is :%ld\n",read);
+       // aes_decrypt(encode_data, key,buf );
 
         if (read < 0) {
             if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
@@ -447,23 +579,31 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                     // written);
                     return;
                 }
-
-                ssize_t sent =
-                    sendto(conns->sock, out, written, 0,
+                //aes_encrypt(out, key, cypher);
+                ssize_t sent;
+                if(aesFlag==1){
+                    preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"recb 494行"); //header enc
+                 sent =
+                    sendto(conns->sock, cypher, written, 0,
                            (struct sockaddr *)&peer_addr, peer_addr_len);
+
+                }
+                else
+                    sent =sendto(conns->sock, out, written, 0,
+                           (struct sockaddr *)&peer_addr, peer_addr_len);
+                    
+     
                 if (sent != written) {
-                    // perror("failed to send");
-                    return;
+                      perror("failed to send");
+               //     return;
                 }
 
                 send_bytes += sent;
-                // fprintf(stderr, "sent %zd bytes\n", sent);
+             
                 return;
             }
 
             if (token_len == 0) {
-                // fprintf(stderr, "stateless retry\n");
-
                 mint_token(dcid, dcid_len, &peer_addr, peer_addr_len, token,
                            &token_len);
 
@@ -476,13 +616,22 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                     //         written);
                     return;
                 }
-
-                ssize_t sent =
-                    sendto(conns->sock, out, written, 0,
+                //aes_encrypt(out, key, cypher);
+                ssize_t sent;
+                if(aesFlag==1){
+                    preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"recvfb 533行"); //header enc
+                    sent =sendto(conns->sock, cypher, written, 0,
                            (struct sockaddr *)&peer_addr, peer_addr_len);
+                     
+                }
+                else
+                    sent =sendto(conns->sock, out, written, 0,
+                           (struct sockaddr *)&peer_addr, peer_addr_len);
+                  //  WRITE_TO_FILE("\nthe sent is :%ld\n",sent);
+                          // written=strlen((char *)cypher);
                 if (sent != written) {
-                    // perror("failed to send");
-                    return;
+                     perror("failed to send");
+                 //   return;
                 }
 
                 send_bytes += sent;
@@ -504,9 +653,9 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
             memcpy(&conn_io->peer_addr, &peer_addr, peer_addr_len);
             conn_io->peer_addr_len = peer_addr_len;
         }
-
+        
         ssize_t done = quiche_conn_recv(conn_io->conn, buf, read);
-
+        
         if (done == QUICHE_ERR_DONE) {
             // fprintf(stderr, "done reading\n");
             break;
@@ -641,67 +790,29 @@ int main(int argc, char *argv[]) {
     const char * proxyaddr=argv[3];
     const char * srcip=argv[4];
     const char * dstip=argv[5];
-    const int BUFLEN=1024;
-    printf("adf");
-char * buf=(char *)malloc(BUFLEN*sizeof(char));
-    {
     
-    FILE   *stream;  
-    //FILE    *wstream;
-    
-    
-    memset( buf, '\0',BUFLEN );//初始化buf
-    char * registerRequest=(char *)malloc(sizeof(char)*512);
-    //char * port="8888";
-    sprintf(registerRequest,"curl http://%s/test/register?ip=%s",proxyaddr,srcip);
-    printf("%s",registerRequest);
-    stream = popen(registerRequest , "r" );
-    free(registerRequest);
-    //将“curl ”命令的输出 通过管道读取（“r”参数）到FILE* stream
-   if (fread( buf, sizeof(char), BUFLEN,  stream) ==0){
-       printf("dsf");
-   }  
-   
-   char post_template[]=" curl -X POST -d '{\"srcip\":\"%s\",\"dstip\":\"%s\",\"data\":\"[%s]\"}'   http://%s/test/getKey  --header \"Content-Type: application/json\"";
-
-   char * cont=strstr(buf,"{\\\"hash");
-   
-   unsigned int contLen= strlen (cont);
- 
-   cont[contLen-1]='\0';
-  cont[contLen-2]='\0';
- 
- // char srcip[]="127.0.0.1";
- // char dstip[]="127.0.0.1";
-
- char request[BUFLEN];
-
-  snprintf(request, BUFLEN, post_template, srcip,dstip,cont,proxyaddr);
-  // printf("%s",request);
-   // free(buf);
-   // clearerr(stream);
-   // printf("\n\n\n\n%s\n",buf);
-    //buf=(char *)malloc(BUFLEN*sizeof(char));
-    printf("%s",request);
-    stream = popen(request , "r" );
-    //将“curl ”命令的输出 通过管道读取（“r”参数）到FILE* stream
-    memset( buf, '\0',BUFLEN );//初始化buf
-
-   if (fread( buf, sizeof(char), BUFLEN,  stream) !=0){
-        //printf("%s\n",buf);
-   }  //将刚刚FILE* stream的数据流读取到buf中
-
-   
-
-    pclose(stream); 
-
-
-    }
-
-
+    char * buf=getSend(srcip,dstip,proxyaddr);
     //char * buf=getSend(srcip,dstip,proxyaddr);
-    printf("%s\n",buf);
-    free(buf);
+   key=strstr(buf,"result");
+
+  
+   unsigned int contLen= strlen (key);
+ 
+    key[contLen-1]='\0';
+    key[contLen-2]='\0';
+    key+=9;
+    
+    WRITE_TO_FILE("\nThe key is :%s\n",key);
+    if(key==NULL){
+        printf("\n错误:获取密钥失败\n");
+        aesFlag=0;
+    }else{
+        printf("\nThe key is :%s\n",key);
+        aes_init(&aaeeskey,key);
+    }
+    
+
+    
     fprintf(stderr, "server start,  timestamp: %lu\n",
             getCurrentUsec());
     WRITE_TO_FILE("server start,  timestamp: %lu\n",
@@ -784,9 +895,10 @@ char * buf=(char *)malloc(BUFLEN*sizeof(char));
 
     close(sock);
 
+    free(buf);
     return 0;
 }
-char * getSend(const char * srcip,const char * dstip,const char * proxyaddr){
+char * getSend(const  char * srcip,const char * dstip,const char * proxyaddr){
     const int BUFLEN=1024;
     FILE   *stream;  
     //FILE    *wstream;
@@ -796,7 +908,7 @@ char * getSend(const char * srcip,const char * dstip,const char * proxyaddr){
     char * registerRequest=(char *)malloc(sizeof(char)*512);
     //char * port="8888";
     sprintf(registerRequest,"curl http://%s/test/register?ip=%s",proxyaddr,srcip);
-    printf("%s",registerRequest);
+  //  printf("%s",registerRequest);
     stream = popen(registerRequest , "r" );
     free(registerRequest);
     //将“curl ”命令的输出 通过管道读取（“r”参数）到FILE* stream
@@ -819,14 +931,15 @@ char * getSend(const char * srcip,const char * dstip,const char * proxyaddr){
  char request[BUFLEN];
 
   snprintf(request, BUFLEN, post_template, srcip,dstip,cont,proxyaddr);
+  printf("%s",request);
   // printf("%s",request);
    // free(buf);
    // clearerr(stream);
    // printf("\n\n\n\n%s\n",buf);
     //buf=(char *)malloc(BUFLEN*sizeof(char));
-    printf("%s",request);
     stream = popen(request , "r" );
     //将“curl ”命令的输出 通过管道读取（“r”参数）到FILE* stream
+    
     memset( buf, '\0',BUFLEN );//初始化buf
 
    if (fread( buf, sizeof(char), BUFLEN,  stream) !=0){
@@ -837,4 +950,66 @@ char * getSend(const char * srcip,const char * dstip,const char * proxyaddr){
 
     pclose(stream); 
    return buf;
+}
+
+int32_t 
+aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len)
+{
+    
+    assert(in && key && out);
+    unsigned char iv[AES_BLOCK_SIZE]; // 加密的初始化向量
+    for(int i=0; i<AES_BLOCK_SIZE; ++i){
+        iv[i] = 0; 
+    }
+ 
+    AES_KEY aes;
+    if(AES_set_encrypt_key((const unsigned char*)key, 128, &aes) < 0){
+        return -1;
+    }
+ 
+    //lyx int len = strlen((char*)in);
+    
+    len += 16;
+    len -= len%16; // 长度 必须是 16 （128位）的整数倍 => 17 + 16 = 33   33-1 = 32;
+ 
+    AES_cbc_encrypt((const unsigned char*)in, (unsigned char*)out, len, &aes, iv, AES_ENCRYPT);
+    return 0;
+}
+ 
+ 
+int32_t 
+aes_decrypt(uint8_t* in,  char* key, uint8_t* out,int len)
+{   
+     
+    if(!in || !key || !out) return -1;
+    unsigned char iv[AES_BLOCK_SIZE] = {0};
+    
+    AES_KEY aes;
+    if(AES_set_decrypt_key((unsigned const char*)key, 128, &aes) < 0){
+        return -2;
+    }
+    
+   //lyx  int len = strlen((char*)in);
+    len += 16;
+    len -= len%16;
+    AES_cbc_encrypt((unsigned const char*)in, (unsigned char*)out, len, &aes, iv, AES_DECRYPT);
+    return 0;
+}
+//flag=1,encrypt in into out
+//flag=0 decrypt in into out
+void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]){
+    
+    memset( out, '\0',lenOut );
+    printf("调用函数 :%s\n",func);
+    if(flag ==1){
+        
+        aes_encrypt(in,key,out,lenIn);
+        printf("server:input:%ld,encoded,len %ld\n",strlen((char *)in),strlen((char *)out));//strlen returns the length of a string ended with '\0'
+    }
+    else{
+        aes_decrypt(in,key,out,lenIn);
+        printf("server:input:%ld,decoded,len %ld\n",strlen((char *)in),strlen((char *)out));
+    }
+
+    return ;
 }
