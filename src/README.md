@@ -4,4 +4,6 @@
 
 2.修改后，运行make.sh编译和搬运
 
-4.启动命令在server_run.sh client_run.sh里(需要sudo权限)
+3.启动命令在server_run.sh client_run.sh里(需要sudo权限)
+
+4.exchangeImf.json是银行交易信息
