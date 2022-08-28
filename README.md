@@ -8,7 +8,7 @@
 2.修改后，运行make.sh编译和搬运
 
 
-4.运行server_run.sh client_run.sh进行通信(需要sudo权限)
+3.运行server_run.sh client_run.sh进行通信(需要sudo权限)
 
 
 注意：需要将client_run.sh、server_run.sh中将%ens33改成对应的网络接口名称
