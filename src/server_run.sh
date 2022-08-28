@@ -21,5 +21,5 @@
 
     cd ../
     # tcpdump -i eth0 -w target.pcap > tcpdump.log 2>&1 &
-    #./server serverIP serverPort   [ipv6Address%networkInterface]:8888   任意串1   任意串2  blockconf位置（中间三个参数用于与课题四交互,需要与client相同）
-    LD_LIBRARY_PATH=./lib RUST_LOG=debug ./server 127.0.0.1 5555 [fd01::1%ens33]:8888 fd03::3 fd02::2 trace/block_trace/aitrans_block.txt > ./log/server_err.log 2>&1 &
+    #./server serverIP serverPort   [ipv6Address%networkInterface]:8888   任意串1   任意串2  交易信息位置（中间三个参数用于与课题四交互,需要与client相同）
+    LD_LIBRARY_PATH=./lib RUST_LOG=debug ./server 127.0.0.1 5555 [fd01::1%ens33]:8888 fd03::3 fd02::2 ./exchangeImf.json > ./log/server_err.log 2>&1 &
