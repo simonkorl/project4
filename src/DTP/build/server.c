@@ -189,7 +189,7 @@ cfbEN(uint8_t* in,  char* key, uint8_t* out,int len)
 void aes_init(AES_KEY * aesKey,char * srcKey){
     AES_set_encrypt_key((uint8_t*)srcKey, 128, aesKey);
 }
-void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]){
+void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag ){
     
     memset( out, '\0',lenOut );
    
@@ -212,7 +212,7 @@ void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char
 static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
     // fprintf(stderr, "enter flush\n");
     static uint8_t out[MAX_DATAGRAM_SIZE];
-    static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
+   // static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
     uint64_t rate = quiche_bbr_get_pacing_rate(conn_io->conn);  // bits/s
     /* WRITE_TO_FILE("%lu pacing: %lu\n", getCurrentUsec(), rate); */
     if (conn_io->done_writing) {
@@ -249,31 +249,10 @@ static void flush_egress(struct ev_loop *loop, struct conn_io *conn_io) {
             return;
         }
         size_t  sent;
-        if(aesFlag==1){
-            preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"flush_egress");
-            sent = sendto(conn_io->sock, cypher, written, 0,
-                              (struct sockaddr *)&conn_io->peer_addr,
-                              conn_io->peer_addr_len);
-
-        }
-        else
-            sent = sendto(conn_io->sock, out, written, 0,
+        sent = sendto(conn_io->sock, out, written, 0,
                               (struct sockaddr *)&conn_io->peer_addr,conn_io->peer_addr_len);
-        
-        if(encFlag ==1&&aesFlag==1){
-            printf("加密后交易信息:\n");
-            printf("%s\n\n",cypher);
-            encFlag=2;
-        }
-        else if(encFlag==1 &&aesFlag==0){
-            printf("加密后交易信息:\n");
-            printf("%s\n\n",keyBuf);
-            encFlag=2;
-        }
-       // WRITE_TO_FILE("\nthe sent is :%ld\n",sent);
-        //aes_encrypt(out, key, cypher);
-      
-              // written=strlen((char*)cypher);               
+    
+                   
         if (sent != written  ) {
             perror("failed to send\n");
           //  return;
@@ -350,7 +329,7 @@ static void sender_cb(EV_P_ ev_timer *w, int revents) {
         int stream_id = 0;
         float send_time_gap = 0.0;
         static uint8_t buf[MAX_BLOCK_SIZE];
-
+        static uint8_t encBuf[100010];
         FILE *fp =fopen(dtp_cfg_fname,"r");
  
       if(fp == NULL) 
@@ -362,19 +341,33 @@ static void sender_cb(EV_P_ ev_timer *w, int revents) {
      int i=0;
      for(i=0;i<MAX_BLOCK_SIZE&&!feof(fp);i++){
          buf[i]=fgetc(fp);
-         printf("%c",buf[i]);
      }
      
-     buf[i-1]='\0';
+     buf[i-1]=0;
      i--;
-     encFlag=1;
-    keyBuf=buf;
+     printf("%s\n",buf);
+      
+    memcpy(encBuf,buf,i+1);
+    if(aesFlag ==1){
+        preCFB(buf,i,encBuf,100010,1);
+    }
+
+    printf("加密后交易信息:\n");
+    printf("%s\n\n",encBuf);
+    encFlag=2;
+
+ 
     static uint8_t sndb[100];
 
-    conn_io->configs[0].block_size=i;
+    conn_io->configs[0].block_size=strlen((char *)encBuf);
+    block_size=conn_io->configs[0].block_size;
+   
+     
     conn_io->configs[0].deadline=10000;
     conn_io->configs[0].priority=1;
     conn_io->configs[0].send_time_gap=0.000001;
+
+    
 
     if (!has_send_len) {
      *((int*)sndb) = cfgs_len;
@@ -395,7 +388,7 @@ static void sender_cb(EV_P_ ev_timer *w, int revents) {
             depend_id = stream_id;
             if (block_size > MAX_BLOCK_SIZE) block_size = MAX_BLOCK_SIZE;
 
-            if (quiche_conn_stream_send_full(conn_io->conn, stream_id, buf,
+            if (quiche_conn_stream_send_full(conn_io->conn, stream_id, encBuf,
                                              block_size, true, deadline,
                                              priority, depend_id) < 0) {
                 
@@ -504,10 +497,10 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
     struct conn_io *tmp, *conn_io = NULL;
 
     static uint8_t buf[MAX_BLOCK_SIZE];
-    static uint8_t encode_data[MAX_BLOCK_SIZE];
+  //  static uint8_t encode_data[MAX_BLOCK_SIZE];
 
     static uint8_t out[MAX_DATAGRAM_SIZE];
-    static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
+  //  static uint8_t cypher[MAX_DATAGRAM_SIZE+16];
     
 
     uint8_t i = 3;
@@ -520,13 +513,7 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
         memset(&peer_addr, 0, peer_addr_len);
 
         ssize_t read;
-        if(aesFlag==1){
-            read = recvfrom(conns->sock, encode_data, sizeof(buf), 0,
-                                (struct sockaddr *)&peer_addr, &peer_addr_len);
-            preCFB(encode_data,read,buf,MAX_BLOCK_SIZE,0,"recv_cb开头435行");
-        }
-        else
-            read = recvfrom(conns->sock, buf, sizeof(buf), 0,
+         read = recvfrom(conns->sock, buf, sizeof(buf), 0,
                                 (struct sockaddr *)&peer_addr, &peer_addr_len);
             
    // WRITE_TO_FILE("\nthe read is :%ld\n",read);
@@ -581,15 +568,7 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                 }
                 //aes_encrypt(out, key, cypher);
                 ssize_t sent;
-                if(aesFlag==1){
-                    preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"recb 494行"); //header enc
-                 sent =
-                    sendto(conns->sock, cypher, written, 0,
-                           (struct sockaddr *)&peer_addr, peer_addr_len);
-
-                }
-                else
-                    sent =sendto(conns->sock, out, written, 0,
+                sent =sendto(conns->sock, out, written, 0,
                            (struct sockaddr *)&peer_addr, peer_addr_len);
                     
      
@@ -618,17 +597,9 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                 }
                 //aes_encrypt(out, key, cypher);
                 ssize_t sent;
-                if(aesFlag==1){
-                    preCFB(out,written,cypher,MAX_DATAGRAM_SIZE+16,1,"recvfb 533行"); //header enc
-                    sent =sendto(conns->sock, cypher, written, 0,
+                sent =sendto(conns->sock, out, written, 0,
                            (struct sockaddr *)&peer_addr, peer_addr_len);
-                     
-                }
-                else
-                    sent =sendto(conns->sock, out, written, 0,
-                           (struct sockaddr *)&peer_addr, peer_addr_len);
-                  //  WRITE_TO_FILE("\nthe sent is :%ld\n",sent);
-                          // written=strlen((char *)cypher);
+             
                 if (sent != written) {
                      perror("failed to send");
                  //   return;
@@ -802,12 +773,18 @@ int main(int argc, char *argv[]) {
     key[contLen-2]='\0';
     key+=9;
     
-    WRITE_TO_FILE("\nThe key is :%s\n",key);
-    if(key==NULL){
-        printf("\n错误:获取密钥失败\n");
+    WRITE_TO_FILE("\nthe key is :%s\n",key);
+    if(!strcmp("null",key)){
+        printf("\n错误:获取密钥失败\n是否继续进行明文传输?(y or n)\n");
         aesFlag=0;
+        char ch=0;
+        for(;scanf("%c",&ch)&&ch!='y'&&ch!='n';){
+             
+        }
+        if(ch=='n')
+            return 0;
     }else{
-        printf("\nThe key is :%s\n",key);
+        printf("\nThe key is :%s\n", key );
         aes_init(&aaeeskey,key);
     }
     
