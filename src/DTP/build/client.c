@@ -86,7 +86,7 @@ FILE* CLIENT_LOG = NULL;
 FILE* CLIENT_CSV = NULL;
 const char* CLIENT_LOG_FILENAME = "client.log";
 const char *CLIENT_CSV_FILENAME = "client.csv";
-const char * dtp_cfg_fname="exchangeImf.json";
+char * dtp_cfg_fname="exchangeImf.json";
 
 #define WRITE_TO_LOG(...)                                           \
   {                                                                 \
@@ -116,17 +116,9 @@ struct conn_io {
     bool done_writing;
 };
 
-// static void debug_log(const char *line, void *argp) {
-//     fprintf(stderr, "%s\n", line);
-// }
 char * getSend(const char * srcip,const char * dstip,const char * proxyaddr);
-int32_t aes_encrypt(uint8_t* in,  char* key, uint8_t* out,int len); // 加密
-int32_t aes_decrypt(uint8_t* in, char* key, uint8_t* out,int len); // 解密
-void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char func[]);
-/*
-myshit!
-*/
- 
+int readStrFromFile(char * fileName,char * buf);
+
 
 int32_t 
 cfbDE(uint8_t* in,  char* key, uint8_t* out,int len)
@@ -180,16 +172,6 @@ void preCFB(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag){
     return ;
 }
  
-
-
- void pri(char * str,int len,char bro[]){
-     printf("%s\n",bro);
-     
-     for(int i=0;i<len;i++)
-        printf("%d ",str[i]);
-
-    printf("\n");
- }
 void aes_init(AES_KEY * aesKey,char * srcKey){
     AES_set_encrypt_key((uint8_t*)srcKey, 128, aesKey);
 }
@@ -354,40 +336,32 @@ static void recv_cb(EV_P_ ev_io *w, int revents) {
                 complete_bytes += block_size;
               //recv
 
-              ssize_t recv_len =
-             quiche_conn_stream_recv(conn_io->conn, s, buf, sizeof(buf), &fin);
-              int banklen=(int)block_size;
-             printf("解密前交易信息\n");
-              buf[banklen++]='\0';
-             printf("%s\n",buf);
-  
-             memcpy(encryptedbuf,buf,banklen);
-             encryptedbuf[banklen]=0;
-              
+            ssize_t recv_len =
+            quiche_conn_stream_recv(conn_io->conn, s, buf, sizeof(buf), &fin);
+            int banklen=(int)block_size;
+
+         
+            printf("解密前交易信息\n%s\n",buf);
+            memcpy(encryptedbuf,buf,banklen);
+
              if(aesFlag==1){
                  preCFB(buf,banklen,encryptedbuf,MAX_BLOCK_SIZE,0);
                   
              }
              
-              printf("解密后交易信息:\n");
-              printf("\n%s\n",encryptedbuf);
+            printf("解密后交易信息:\n\n%s\n",encryptedbuf);
+
             char HardBuf[1000];
-            FILE *fp =fopen(dtp_cfg_fname,"r");
-            int i=0;
-            for(i=0;i<MAX_BLOCK_SIZE&&!feof(fp);i++){
-            HardBuf[i]=fgetc(fp);
-          //   printf("%c",HardBuf[i]);
-           }
-   
-           HardBuf[i-1]='\0';
-           i--;
+            
+            readStrFromFile(dtp_cfg_fname,HardBuf);
+           //i--;
            printf("源文件信息:\n");
            printf("%s",HardBuf);
            if(strcmp((char *)encryptedbuf,(char*)HardBuf)==0){
                printf("\n源信息与接收到信息相同\n");
            }
             
-                      if (recv_len < 0) {
+          if (recv_len < 0) {
                      
                  break;
             }
@@ -485,6 +459,7 @@ int main(int argc, char *argv[]) {
         printf("\n错误:获取密钥失败\n");
         aesFlag=0;
     }else{
+      
         printf("\nthe key is :%s\n", key);
         aes_init(&aaeeskey,key);
     }
@@ -749,4 +724,25 @@ void preProcessBuf(uint8_t in[],int lenIn,uint8_t out[],int lenOut,int flag,char
     }
 
     return ;
+}
+int readStrFromFile(char * fileName,char * buf){
+
+        FILE *fp = fopen(dtp_cfg_fname, "r");
+
+        if (fp == NULL)
+        {
+            perror("打开文件时发生错误");
+            return -1;
+        }
+        
+        int length = 0;
+
+        for (length = 0; length < MAX_BLOCK_SIZE && !feof(fp); length++)
+        {
+            buf[length] = fgetc(fp);
+        }
+        buf[length - 2] = 0;
+        length = length - 1;
+
+        return length;
 }
