@@ -1,11 +1,10 @@
-
-    #!/bin/bash
+#!/bin/bash
     
-    sh ./stop_server.sh
-    cd ./DTP/build/
-    make
+sh ./stop_server.sh
+cd ./DTP/test-prog/
+make
     
-    cp server ../../
-    cp client ../../ 
+cp server ../../
+cp client ../../ 
    
-    echo finished make and move 
+echo finished making and copying executables 
